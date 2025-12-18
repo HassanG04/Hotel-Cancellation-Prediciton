@@ -1,90 +1,293 @@
-/* Base styles */
-body {
-    margin: 0;
-    font-family: Arial, sans-serif;
-    background-color: white;
-    color: black;
-    transition: all 0.3s ease;
+/* =========================
+   Base + Theme Variables
+   ========================= */
+:root {
+    --bg: #A9D1D4;
+    /* light background */
+    --nav: #1877F2;
+    /* facebook blue */
+    --card: #ffffff;
+    --text: #0b1220;
+    --muted: #334155;
+    --border: rgba(0, 0, 0, 0.12);
+
+    --input-bg: #f8fafc;
+    --input-border: rgba(0, 0, 0, 0.18);
+
+    --btn: #0b5ed7;
+    --btn-text: #ffffff;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.10);
 }
 
-/* Navbar layout */
+body.dark {
+    --bg: #001b3a;
+    /* dark background */
+    --nav: #000040;
+    /* darker than bg so navbar is visible */
+    --card: #0e1f3f;
+    --text: #ffffff;
+    --muted: rgba(255, 255, 255, 0.85);
+    --border: rgba(255, 255, 255, 0.16);
+
+    --input-bg: #071734;
+    --input-border: rgba(255, 255, 255, 0.22);
+
+    --btn: #1e40af;
+    --btn-text: #ffffff;
+    --shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-weight: 700;
+}
+
+/* =========================
+   Navbar
+   ========================= */
 .navbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 60px;
-    padding: 0 1rem;
-    background-color: cyan;
-    color: white;
+    gap: 16px;
+    padding: 14px 18px;
+    background: var(--nav);
+    color: #fff;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
 }
 
-/* Left-aligned title */
 .navbar-title {
-    font-weight: bold;
-    font-size: 1.5rem;
-    white-space: nowrap;
-    overflow: hidden;
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: .2px;
 }
 
-/* Right-aligned small moon button */
+.nav-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.nav-links {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+}
+
+.nav-links a {
+    color: #fff;
+    text-decoration: none;
+    font-weight: 900;
+    opacity: .95;
+}
+
+.nav-links a:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
+
 .darkmode-btn {
-    font-size: 1.2rem;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border-radius: 12px;
     padding: 6px 10px;
-    height: 36px;
-    width: 36px;
-    border: none;
-    background-color: transparent;
-    color: white;
     cursor: pointer;
+    font-weight: 900;
+}
+
+/* =========================
+   Layout + Cards
+   ========================= */
+.container {
+    width: min(980px, 92vw);
+    margin: 24px auto;
+}
+
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 18px;
+    box-shadow: var(--shadow);
+}
+
+.header h1 {
+    margin: 0 0 6px 0;
+    font-size: 30px;
+}
+
+.header p {
+    margin: 0;
+    color: var(--muted);
+    font-weight: 800;
+}
+
+/* =========================
+   Form grid
+   ========================= */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.field label {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 8px;
+    font-weight: 900;
+    margin-bottom: 6px;
 }
 
-/* Form container */
-.container {
-    padding: 2rem;
-    max-width: 600px;
-    margin: auto;
-}
-
-/* Inputs */
-input,
-select,
-button {
-    display: block;
+.field input,
+.field select {
     width: 100%;
-    margin: 0.75rem 0;
-    padding: 0.5rem;
-    font-size: 1rem;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--input-border);
+    background: var(--input-bg);
+    color: var(--text);
+    font-weight: 800;
+    outline: none;
 }
 
-button {
-    background-color: #007BFF;
-    color: white;
+.field input:focus,
+.field select:focus {
+    border-color: rgba(24, 119, 242, 0.7);
+    box-shadow: 0 0 0 4px rgba(24, 119, 242, 0.18);
+}
+
+.actions {
+    margin-top: 16px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+button.primary {
+    background: var(--btn);
+    color: var(--btn-text);
     border: none;
+    border-radius: 14px;
+    padding: 10px 14px;
+    font-weight: 900;
     cursor: pointer;
 }
 
-/* Result section */
+button.primary:hover {
+    filter: brightness(1.05);
+}
+
 .result {
-    background-color: #f2f2f2;
-    padding: 1rem;
-    margin-top: 2rem;
-    border-left: 5px solid #007BFF;
-}
-
-/* Dark mode */
-body.dark {
-    background-color: #001f3f;
-    color: white;
-}
-
-body.dark .navbar {
-    background-color: #001f3f;
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.04);
 }
 
 body.dark .result {
-    background-color: #003355;
-    border-color: #00aced;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* =========================
+   Info button + dialog
+   ========================= */
+.info-btn {
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.12);
+    color: inherit;
+    border-radius: 10px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-weight: 900;
+}
+
+body:not(.dark) .info-btn {
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    background: rgba(0, 0, 0, 0.04);
+}
+
+.info-dialog {
+    border: none;
+    border-radius: 16px;
+    padding: 0;
+    width: min(520px, 92vw);
+}
+
+.info-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.info-dialog-inner {
+    padding: 16px;
+    background: var(--card);
+    color: var(--text);
+}
+
+.ok {
+    color: #16a34a;
+    font-weight: 900;
+}
+
+.bad {
+    color: #dc2626;
+    font-weight: 900;
+}
+
+.hint {
+    margin-top: 6px;
+    font-size: 12px;
+    font-weight: 800;
+    opacity: .85;
+}
+
+.btn-link {
+    color: #fff;
+    font-weight: 900;
+    text-decoration: none;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+body:not(.dark) .btn-link {
+    color: var(--text);
+    background: rgba(0, 0, 0, 0.05);
+    border: 1px solid var(--border);
+}
+
+.danger {
+    margin-left: 8px;
+    border: 1px solid rgba(220, 38, 38, 0.6);
+    background: rgba(220, 38, 38, 0.12);
+    color: #dc2626;
+    border-radius: 12px;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-weight: 900;
 }

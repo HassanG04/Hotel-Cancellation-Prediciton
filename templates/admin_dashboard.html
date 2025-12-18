@@ -1,0 +1,89 @@
+{% extends "_base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="header">
+      <h1>Admin Dashboard</h1>
+      <p>Total users: <b>{{ total_users }}</b></p>
+    </div>
+
+    <!-- Add user -->
+    <div class="result">
+      <h3>Add user</h3>
+      {% if add_error %}<p class="bad">{{ add_error }}</p>{% endif %}
+      <form method="post" action="/dashboard/add-user">
+        <div class="grid">
+          <div class="field">
+            <label>Hotel/Name</label>
+            <input name="hotel_name" required placeholder="e.g., Sea View Hotel">
+          </div>
+          <div class="field">
+            <label>Location</label>
+            <input name="location" required placeholder="e.g., Alexandria">
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input name="email" type="email" required placeholder="name@example.com">
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input name="password" type="password" required minlength="6" placeholder="min 6 chars">
+          </div>
+          <div class="field">
+            <label>Role</label>
+            <select name="role" required>
+              <option value="owner">Customer (owner)</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Photo URL (optional)</label>
+            <input name="photo_url" placeholder="https://...">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Create user</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Users table -->
+    <div class="result">
+      <h3>Users & submissions</h3>
+
+      <div style="overflow:auto; margin-top:10px;">
+        <table style="width:100%; border-collapse: collapse;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border);">Hotel / Name</th>
+              <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border);">Email</th>
+              <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border);">Role</th>
+              <th style="text-align:right; padding:8px; border-bottom:1px solid var(--border);">Submissions</th>
+              <th style="text-align:right; padding:8px; border-bottom:1px solid var(--border);">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in users %}
+              <tr>
+                <td style="padding:8px; border-bottom:1px solid var(--border);">{{ u.name }}</td>
+                <td style="padding:8px; border-bottom:1px solid var(--border);">{{ u.email }}</td>
+                <td style="padding:8px; border-bottom:1px solid var(--border);">{{ u.role }}</td>
+                <td style="padding:8px; border-bottom:1px solid var(--border); text-align:right;">{{ u.submissions }}</td>
+                <td style="padding:8px; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap;">
+                  <a class="btn-link" href="/dashboard/users/{{ u.id }}">Configure</a>
+
+                  <form method="post" action="/dashboard/users/{{ u.id }}/delete" style="display:inline;">
+                    <button class="danger" type="submit"
+                      onclick="return confirm('Delete this user and ALL their data?');">
+                      Delete
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+{% endblock %}

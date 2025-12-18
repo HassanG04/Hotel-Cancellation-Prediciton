@@ -1,0 +1,46 @@
+{% extends "_base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="header">
+      <h1>Register</h1>
+      <p>Create an owner account (hotel profile included).</p>
+    </div>
+
+    {% if error %}
+      <div class="result"><p>{{ error }}</p></div>
+    {% endif %}
+
+    <form method="post" action="/register">
+      <div class="grid">
+        <div class="field">
+          <label>Hotel name</label>
+          <input name="hotel_name" required placeholder="e.g., Sea View Hotel">
+        </div>
+
+        <div class="field">
+          <label>Location</label>
+          <input name="location" required placeholder="e.g., Alexandria, Egypt">
+        </div>
+
+        <div class="field span-2">
+          <label>Photo URL</label>
+          <input name="photo_url" placeholder="https://... (optional)">
+        </div>
+
+        <div class="field">
+          <label>Email</label>
+          <input name="email" type="email" required placeholder="name@example.com">
+        </div>
+
+        <div class="field">
+          <label>Password</label>
+          <input name="password" type="password" required minlength="6" placeholder="min 6 characters">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" type="submit">Create account</button>
+      </div>
+    </form>
+  </div>
+{% endblock %}

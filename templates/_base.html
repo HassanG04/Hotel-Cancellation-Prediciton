@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title or "Cellula Hotel" }}</title>
+  <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}?v=3">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-title">{{ title or "Cellula Hotel" }}</div>
+
+    <div class="nav-right">
+      <div class="nav-links">
+        {% if logged_in %}
+          <a href="/predict">Prediction</a>
+          {% if role == "admin" %}
+            <a href="/dashboard">Dashboard</a>
+          {% endif %}
+          <a href="/logout">Logout</a>
+        {% else %}
+          <a href="/">Login</a>
+          <a href="/register">Register</a>
+        {% endif %}
+      </div>
+
+      <button id="darkModeToggle" class="darkmode-btn" type="button" aria-label="Toggle theme">🌙</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+
+  <!-- Reusable dialog for info buttons -->
+  <dialog id="infoDialog" class="info-dialog">
+    <div class="info-dialog-inner">
+      <h3 id="infoTitle">Info</h3>
+      <p id="infoText"></p>
+      <div class="actions">
+        <button class="primary" id="closeInfo" type="button">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    // Theme toggle
+    const toggleBtn = document.getElementById("darkModeToggle");
+    function applyTheme(mode) {
+      const dark = (mode === "dark");
+      document.body.classList.toggle("dark", dark);
+      toggleBtn.textContent = dark ? "☀️" : "🌙";
+      localStorage.setItem("theme", mode);
+    }
+    applyTheme(localStorage.getItem("theme") || "light");
+    toggleBtn.addEventListener("click", () => {
+      applyTheme(document.body.classList.contains("dark") ? "light" : "dark");
+    });
+
+    // Info buttons -> dialog
+    const dialog = document.getElementById("infoDialog");
+    const infoTitle = document.getElementById("infoTitle");
+    const infoText  = document.getElementById("infoText");
+    const closeInfo = document.getElementById("closeInfo");
+
+    function openInfo(title, text){
+      if (dialog && dialog.showModal) {
+        infoTitle.textContent = title;
+        infoText.textContent = text;
+        dialog.showModal();
+      } else {
+        alert(title + "\\n\\n" + text);
+      }
+    }
+
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest(".info-btn");
+      if (!btn) return;
+      openInfo(btn.dataset.title || "Info", btn.dataset.info || "");
+    });
+
+    closeInfo.addEventListener("click", () => dialog.close());
+  </script>
+</body>
+</html>

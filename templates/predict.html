@@ -1,0 +1,215 @@
+{% extends "_base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="header">
+      <h1>Prediction</h1>
+      <p>Predict whether the booking will be cancelled. Each submission is saved to MongoDB.</p>
+    </div>
+
+    {% if prediction_text %}
+      <div class="result">
+        <h3>Result</h3>
+        {% if prediction_text == "Not Cancelled" %}
+          <p class="ok">{{ prediction_text }}</p>
+        {% else %}
+          <p class="bad">{{ prediction_text }}</p>
+        {% endif %}
+
+        {% if is_correct is not none %}
+          {% if is_correct %}
+            <p class="ok">Marked as Correct</p>
+          {% else %}
+            <p class="bad">Marked as Incorrect</p>
+          {% endif %}
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <form method="post" action="/predict">
+      <div class="grid">
+
+        <div class="field">
+          <label>Adults
+            <button type="button" class="info-btn" data-title="Adults"
+              data-info="Number of adults in the booking.">ⓘ</button>
+          </label>
+          <input type="number" name="number_of_adults" min="0" max="4" step="1" required>
+          {% set s = stats.get("number of adults") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Children
+            <button type="button" class="info-btn" data-title="Children"
+              data-info="Number of children in the booking.">ⓘ</button>
+          </label>
+          <input type="number" name="number_of_children" min="0" max="10" step="1" required>
+          {% set s = stats.get("number of children") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Weekend nights
+            <button type="button" class="info-btn" data-title="Weekend nights"
+              data-info="Number of weekend nights (usually Fri/Sat) in the stay.">ⓘ</button>
+          </label>
+          <input type="number" name="number_of_weekend_nights" min="0" max="7" step="1" required>
+          {% set s = stats.get("number of weekend nights") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Week nights
+            <button type="button" class="info-btn" data-title="Week nights"
+              data-info="Number of weekday nights (Sun–Thu) in the stay.">ⓘ</button>
+          </label>
+          <input type="number" name="number_of_week_nights" min="0" max="17" step="1" required>
+          {% set s = stats.get("number of week nights") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Meal plan (encoded)
+            <button type="button" class="info-btn" data-title="Meal plan"
+              data-info="Encoded meal selection. It’s categorical but stored as numbers.">ⓘ</button>
+          </label>
+          <select name="type_of_meal" required>
+            <option value="0">0 — Meal Plan 1</option>
+            <option value="1">1 — Not Selected</option>
+            <option value="2">2 — Meal Plan 2</option>
+            <option value="3">3 — Meal Plan 3</option>
+          </select>
+          {% set s = stats.get("type of meal") %}
+          {% if s %}<div class="hint">Avg (encoded): {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Parking (0/1)
+            <button type="button" class="info-btn" data-title="Parking"
+              data-info="Whether the booking includes a car parking space (1=yes, 0=no).">ⓘ</button>
+          </label>
+          <select name="car_parking_space" required>
+            <option value="0">0 — No</option>
+            <option value="1">1 — Yes</option>
+          </select>
+          {% set s = stats.get("car parking space") %}
+          {% if s %}<div class="hint">Avg: {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Room type (encoded)
+            <button type="button" class="info-btn" data-title="Room type"
+              data-info="Encoded room category (categorical stored as a number).">ⓘ</button>
+          </label>
+          <select name="room_type" required>
+            <option value="0">0 — Room_Type 1</option>
+            <option value="1">1 — Room_Type 4</option>
+            <option value="2">2 — Room_Type 2</option>
+            <option value="3">3 — Room_Type 6</option>
+            <option value="4">4 — Room_Type 5</option>
+            <option value="5">5 — Room_Type 7</option>
+            <option value="6">6 — Room_Type 3</option>
+          </select>
+          {% set s = stats.get("room type") %}
+          {% if s %}<div class="hint">Avg (encoded): {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Lead time (days)
+            <button type="button" class="info-btn" data-title="Lead time"
+              data-info="Days between booking date and arrival date. Longer lead times can correlate with cancellations.">ⓘ</button>
+          </label>
+          <input type="number" name="lead_time" min="0" max="443" step="1" required>
+          {% set s = stats.get("lead time") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Market segment (encoded)
+            <button type="button" class="info-btn" data-title="Market segment"
+              data-info="How the booking was made (online/offline/corporate...). Stored as an encoded category.">ⓘ</button>
+          </label>
+          <select name="market_segment_type" required>
+            <option value="0">0 — Offline</option>
+            <option value="1">1 — Online</option>
+            <option value="2">2 — Corporate</option>
+            <option value="3">3 — Aviation</option>
+            <option value="4">4 — Complementary</option>
+          </select>
+          {% set s = stats.get("market segment type") %}
+          {% if s %}<div class="hint">Avg (encoded): {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Repeated customer (0/1)
+            <button type="button" class="info-btn" data-title="Repeated customer"
+              data-info="Whether this customer has booked before (1) or not (0).">ⓘ</button>
+          </label>
+          <select name="repeated" required>
+            <option value="0">0 — No</option>
+            <option value="1">1 — Yes</option>
+          </select>
+          {% set s = stats.get("repeated") %}
+          {% if s %}<div class="hint">Avg: {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Previous cancellations (P-C)
+            <button type="button" class="info-btn" data-title="P-C"
+              data-info="Number of previous bookings by the same customer that were cancelled.">ⓘ</button>
+          </label>
+          <input type="number" name="p_c" min="0" max="13" step="1" required>
+          {% set s = stats.get("P-C") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Previous non-cancellations (P-not-C)
+            <button type="button" class="info-btn" data-title="P-not-C"
+              data-info="Number of previous bookings by the same customer that were NOT cancelled (completed stays).">ⓘ</button>
+          </label>
+          <input type="number" name="p_not_c" min="0" max="58" step="1" required>
+          {% set s = stats.get("P-not-C") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Average price
+            <button type="button" class="info-btn" data-title="Average price"
+              data-info="Average price of the booking (numeric).">ⓘ</button>
+          </label>
+          <input type="number" name="average_price" min="0" max="540" step="0.01" required>
+          {% set s = stats.get("average price") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Special requests
+            <button type="button" class="info-btn" data-title="Special requests"
+              data-info="Number of special requests (e.g., extra bed, high floor).">ⓘ</button>
+          </label>
+          <input type="number" name="special_requests" min="0" max="5" step="1" required>
+          {% set s = stats.get("special requests") %}
+          {% if s %}<div class="hint">Typical: {{ s.low }}–{{ s.high }}, avg {{ s.avg }}</div>{% endif %}
+        </div>
+
+        <div class="field span-2">
+          <label>Actual outcome (optional)
+            <button type="button" class="info-btn" data-title="Actual outcome"
+              data-info="If you already know what happened, select it. This lets us mark the prediction as correct/incorrect (stored in MongoDB).">ⓘ</button>
+          </label>
+          <select name="actual_outcome">
+            <option value="">Unknown / Not decided</option>
+            <option value="0">Not Cancelled</option>
+            <option value="1">Cancelled</option>
+          </select>
+        </div>
+
+      </div>
+
+      <div class="actions">
+        <button class="primary" type="submit">Predict</button>
+      </div>
+    </form>
+  </div>
+{% endblock %}

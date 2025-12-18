@@ -1,0 +1,38 @@
+{% extends "_base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="header">
+      <h1>Configure user</h1>
+      <p><b>{{ u.email }}</b></p>
+    </div>
+
+    <div class="result">
+      <p><b>Hotel/Name:</b> {{ u.name }}</p>
+      <p><b>Location:</b> {{ u.location }}</p>
+      <p><b>Role:</b> {{ u.role }}</p>
+      <p><b>Submissions:</b> {{ u.submissions }}</p>
+    </div>
+
+    <div class="result">
+      <h3>Change role</h3>
+      {% if msg %}<p class="ok">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="bad">{{ error }}</p>{% endif %}
+
+      <form method="post" action="/dashboard/users/{{ u.id }}/role">
+        <div class="grid">
+          <div class="field span-2">
+            <label>Role</label>
+            <select name="role" required>
+              <option value="owner" {% if u.role == "owner" %}selected{% endif %}>Customer (owner)</option>
+              <option value="admin" {% if u.role == "admin" %}selected{% endif %}>Admin</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Save</button>
+          <a class="btn-link" href="/dashboard">Back</a>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

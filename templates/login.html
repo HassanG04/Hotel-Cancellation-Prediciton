@@ -1,0 +1,31 @@
+{% extends "_base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="header">
+      <h1>Login</h1>
+      <p>Sign in to continue.</p>
+    </div>
+
+    {% if error %}
+      <div class="result"><p>{{ error }}</p></div>
+    {% endif %}
+
+    <form method="post" action="/login">
+      <div class="grid">
+        <div class="field span-2">
+          <label>Email</label>
+          <input name="email" type="email" required placeholder="name@example.com">
+        </div>
+
+        <div class="field span-2">
+          <label>Password</label>
+          <input name="password" type="password" required placeholder="••••••••">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" type="submit">Login</button>
+      </div>
+    </form>
+  </div>
+{% endblock %}
