@@ -145,7 +145,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The application waits for PostgreSQL health, applies migrations, runs as a non-root user, and listens on `http://localhost:8000`. Docker was not available in the local verification environment, so container startup must also be checked on a Docker-enabled host; the compose file is parsed in CI/static validation.
+The application waits for PostgreSQL health, applies migrations, runs as a non-root user,
+and binds the host port to loopback at `http://localhost:8000`. Although local Docker was
+unavailable, GitHub Actions actually passed `docker compose build`, health-checked Compose
+startup, `/health` and `/docs`, followed by cleanup. The separate PostgreSQL 16 job passed
+migrations and all ten tests against its explicitly configured test database.
+See the [verified CI run](https://github.com/HassanG04/Hotel-Cancellation-Prediciton/actions/runs/35028674614).
 
 ## Run without Docker
 
@@ -177,7 +182,8 @@ Ten tests cover real artifact loading and inference, input bounds, unknown field
 database cascade integrity, authenticated API prediction, health, data contracts, and
 retraining/export/loading. The migration was locally verified through upgrade → downgrade
 → upgrade on SQLite. GitHub Actions configures PostgreSQL 16 and runs the migration;
-a real local PostgreSQL server was unavailable, so that engine is not claimed as locally verified.
+a real local PostgreSQL server was unavailable, but the remote PostgreSQL job and container
+smoke test both passed. This is verified CI infrastructure, not a public deployment.
 
 ## Observability and failure handling
 
@@ -206,7 +212,7 @@ docker-compose.yml          application and PostgreSQL services
 
 ## Remaining gaps
 
-- Verify the provided containers and PostgreSQL integration on a Docker-enabled host.
+- Establish production backup/restore, HTTPS and access controls before any public deployment.
 - Re-run cross-validation on a versioned data split before comparing the historical accuracy with a new model.
 - Add an API authentication mechanism suitable for non-browser clients before public deployment.
 - No cloud deployment is claimed; a secure low-cost target should be selected and verified separately.
