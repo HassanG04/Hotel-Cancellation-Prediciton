@@ -1,17 +1,35 @@
-import os
-from pathlib import Path
-from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
+from __future__ import annotations
 
-# Always load .env from the PROJECT ROOT (advancedb_project/.env)
-ROOT_ENV = Path(__file__).resolve().parents[1] / ".env"
-load_dotenv(dotenv_path=ROOT_ENV)
+from collections.abc import Generator
 
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB  = os.getenv("MONGO_DB")
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-if not MONGO_URI or not MONGO_DB:
-    raise RuntimeError(f"Missing env vars. MONGO_URI={MONGO_URI!r}, MONGO_DB={MONGO_DB!r}. Loaded from {ROOT_ENV}")
+from .config import Settings
 
-client = AsyncIOMotorClient(MONGO_URI)
-db = client[MONGO_DB]
+settings = Settings.from_env()
+engine_options: dict = {"pool_pre_ping": True}
+if settings.database_url.endswith(":memory:"):
+    engine_options.update(
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+engine = create_engine(settings.database_url, **engine_options)
+
+if settings.database_url.startswith("sqlite"):
+
+    @event.listens_for(engine, "connect")
+    def enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def get_session() -> Generator[Session, None, None]:
+    with SessionLocal() as session:
+        yield session

@@ -3,8 +3,10 @@
   <div class="card">
     <div class="header">
       <h1>Prediction</h1>
-      <p>Predict whether the booking will be cancelled. Each submission is saved to MongoDB.</p>
+      <p>Predict whether the booking will be cancelled. Each submission is linked to its PostgreSQL model version.</p>
     </div>
+
+    {% if input_error %}<p class="bad">The submitted values are outside the supported feature schema.</p>{% endif %}
 
     {% if prediction_text %}
       <div class="result">
@@ -13,6 +15,10 @@
           <p class="ok">{{ prediction_text }}</p>
         {% else %}
           <p class="bad">{{ prediction_text }}</p>
+        {% endif %}
+
+        {% if prediction_probability is not none %}
+          <p>Cancellation probability: <b>{{ prediction_probability }}%</b></p>
         {% endif %}
 
         {% if is_correct is not none %}
@@ -102,13 +108,13 @@
               data-info="Encoded room category (categorical stored as a number).">ⓘ</button>
           </label>
           <select name="room_type" required>
-            <option value="0">0 — Room_Type 1</option>
-            <option value="1">1 — Room_Type 4</option>
-            <option value="2">2 — Room_Type 2</option>
-            <option value="3">3 — Room_Type 6</option>
-            <option value="4">4 — Room_Type 5</option>
-            <option value="5">5 — Room_Type 7</option>
-            <option value="6">6 — Room_Type 3</option>
+            <option value="1">Room_Type 1</option>
+            <option value="2">Room_Type 2</option>
+            <option value="3">Room_Type 3</option>
+            <option value="4">Room_Type 4</option>
+            <option value="5">Room_Type 5</option>
+            <option value="6">Room_Type 6</option>
+            <option value="7">Room_Type 7</option>
           </select>
           {% set s = stats.get("room type") %}
           {% if s %}<div class="hint">Avg (encoded): {{ s.avg }}</div>{% endif %}
@@ -196,7 +202,7 @@
         <div class="field span-2">
           <label>Actual outcome (optional)
             <button type="button" class="info-btn" data-title="Actual outcome"
-              data-info="If you already know what happened, select it. This lets us mark the prediction as correct/incorrect (stored in MongoDB).">ⓘ</button>
+              data-info="If you already know what happened, select it. This lets us store an auditable correctness result with the prediction.">ⓘ</button>
           </label>
           <select name="actual_outcome">
             <option value="">Unknown / Not decided</option>

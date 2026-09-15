@@ -1,327 +1,355 @@
 from __future__ import annotations
 
-from pathlib import Path
-from datetime import datetime
-import os
-import io
+import json
+import logging
+import time
+from contextlib import asynccontextmanager
 
 import pandas as pd
-import joblib
-
-from fastapi import FastAPI, Request, Form
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
-from dotenv import load_dotenv
-from bson import ObjectId
-from bson.binary import Binary
 
-from backend.db import db
+from backend.config import BASE_DIR
+from backend.db import SessionLocal, get_session, settings
+from backend.inference import ModelService
+from backend.models import Hotel, ModelVersion, Observation, Prediction, User
+from backend.schemas import BookingFeatures, PredictionRequest, PredictionResponse
 from backend.security import hash_password, verify_password
 
-
-# ---------------------------
-# Env + Paths
-# ---------------------------
-ROOT_ENV = Path(__file__).resolve().parents[1] / ".env"
-load_dotenv(dotenv_path=ROOT_ENV)
-
-BASE_DIR = Path(__file__).resolve().parents[1]  # project root
-MODEL_FILE = BASE_DIR / "model_xgb.pkl"
+logging.basicConfig(
+    level=getattr(logging, settings.log_level, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+LOGGER = logging.getLogger("hotel_api")
 CSV_FILE = BASE_DIR / "cellula_hotel.csv"
-
-SECRET_KEY = os.environ.get("SECRET_KEY")
-if not SECRET_KEY:
-    raise RuntimeError("SECRET_KEY is missing in .env")
-
-FEATURE_ORDER = [
-    "number of adults",
-    "number of children",
-    "number of weekend nights",
-    "number of week nights",
-    "type of meal",
-    "car parking space",
-    "room type",
-    "lead time",
-    "market segment type",
-    "repeated",
-    "P-C",
-    "P-not-C",
-    "average price",
-    "special requests",
-]
-
-MODEL_CACHE = {"model": None, "features": None, "model_id": None}
-STATS: dict[str, dict[str, float]] = {}
+model_service = ModelService(settings.model_path)
+model_version_id: int | None = None
 
 
-# ---------------------------
-# Helpers
-# ---------------------------
-def ctx(request: Request, **kwargs):
-    return {
-        "request": request,
-        "logged_in": bool(request.session.get("user_id")),
-        "role": (request.session.get("role") or "").lower(),
-        **kwargs,
-    }
+def compute_stats_from_csv() -> dict[str, dict[str, float]]:
+    if not CSV_FILE.exists():
+        return {}
+    frame = pd.read_csv(CSV_FILE)
+    frame.columns = frame.columns.str.strip()
+    stats: dict[str, dict[str, float]] = {}
+    for column in BookingFeatures.model_fields:
+        model_name = column.replace("_", " ")
+        source_name = {
+            "previous cancellations": "P-C",
+            "previous not cancelled": "P-not-C",
+        }.get(model_name, model_name)
+        if source_name not in frame:
+            continue
+        values = pd.to_numeric(frame[source_name], errors="coerce").dropna()
+        if values.empty:
+            continue
+        stats[source_name] = {
+            "low": round(float(values.quantile(0.05)), 2),
+            "high": round(float(values.quantile(0.95)), 2),
+            "avg": round(float(values.mean()), 2),
+        }
+    return stats
 
 
-def require_login(request: Request) -> str | None:
-    return request.session.get("user_id")
+STATS = compute_stats_from_csv()
 
 
-def require_admin(request: Request) -> bool:
-    return (request.session.get("role") or "").lower() == "admin"
+def ensure_model_version(session: Session) -> ModelVersion:
+    global model_version_id
+    existing = session.scalar(
+        select(ModelVersion).where(ModelVersion.artifact_sha256 == model_service.sha256)
+    )
+    if existing is None:
+        session.execute(update(ModelVersion).values(is_active=False))
+        existing = ModelVersion(
+            name="hotel-cancellation-xgboost",
+            version=model_service.version,
+            artifact_sha256=model_service.sha256,
+            artifact_path=str(model_service.artifact_path),
+            feature_schema=model_service.feature_names,
+            is_active=True,
+        )
+        session.add(existing)
+    else:
+        existing.is_active = True
+    session.commit()
+    session.refresh(existing)
+    model_version_id = existing.id
+    return existing
 
 
-def oid_or_none(x: str):
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    model_service.load()
+    with SessionLocal() as session:
+        ensure_model_version(session)
+    LOGGER.info(
+        "model_loaded version=%s sha256=%s features=%d",
+        model_service.version,
+        model_service.sha256,
+        len(model_service.feature_names),
+    )
+    yield
+
+
+app = FastAPI(
+    title="Hotel Cancellation Prediction API",
+    version="1.0.0",
+    description="Validated XGBoost inference with PostgreSQL prediction lineage.",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    same_site="lax",
+    https_only=settings.cookie_secure,
+)
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    started = time.perf_counter()
     try:
-        return ObjectId(x)
+        response = await call_next(request)
     except Exception:
+        LOGGER.exception("request_failed method=%s path=%s", request.method, request.url.path)
+        raise
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+    LOGGER.info(
+        "request_complete method=%s path=%s status=%s latency_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    response.headers["X-Response-Time-Ms"] = str(elapsed_ms)
+    return response
+
+
+def template(request: Request, name: str, **context):
+    return templates.TemplateResponse(
+        request=request,
+        name=name,
+        context={
+            "logged_in": bool(request.session.get("user_id")),
+            "role": (request.session.get("role") or "").lower(),
+            **context,
+        },
+    )
+
+
+def logged_in_user_id(request: Request) -> int | None:
+    try:
+        return int(request.session.get("user_id"))
+    except (TypeError, ValueError):
         return None
 
 
-def flash(request: Request, text: str, kind: str = "ok"):
-    # kind: "ok" or "bad"
-    request.session["flash"] = {"kind": kind, "text": text}
+def is_admin(request: Request) -> bool:
+    return (request.session.get("role") or "").lower() == "admin"
+
+
+def flash(request: Request, message: str, kind: str = "ok") -> None:
+    request.session["flash"] = {"kind": kind, "text": message}
 
 
 def pop_flash(request: Request):
     return request.session.pop("flash", None)
 
 
-def compute_stats_from_csv() -> dict[str, dict[str, float]]:
-    """
-    'Typical range' = 5th–95th percentile, plus avg.
-    """
-    if not CSV_FILE.exists():
-        return {}
-
-    df = pd.read_csv(CSV_FILE)
-
-    stats: dict[str, dict[str, float]] = {}
-    for col in FEATURE_ORDER:
-        if col not in df.columns:
-            continue
-
-        s = pd.to_numeric(df[col], errors="coerce").dropna()
-        if s.empty:
-            continue
-
-        low = float(s.quantile(0.05))
-        high = float(s.quantile(0.95))
-        avg = float(s.mean())
-
-        stats[col] = {"low": round(low, 2), "high": round(high, 2), "avg": round(avg, 2)}
-
-    return stats
-
-
-async def ensure_model_in_mongo():
-    """
-    Requirement: model stored in MongoDB models collection.
-    Seeds/repairs it using the raw bytes of model_xgb.pkl.
-    """
-    existing = await db.models.find_one({"name": "model_xgb"})
-    if existing and existing.get("payload"):
-        return
-
-    if not MODEL_FILE.exists():
-        raise RuntimeError(f"model_xgb.pkl not found at: {MODEL_FILE}")
-
-    raw_bytes = MODEL_FILE.read_bytes()
-    model_obj, model_features = joblib.load(MODEL_FILE)
-
-    doc = {
-        "name": "model_xgb",
-        "format": "joblib",
-        "created_at": datetime.utcnow(),
-        "payload": Binary(raw_bytes),
-        "features": list(model_features),
-    }
-
-    if existing:
-        await db.models.update_one({"_id": existing["_id"]}, {"$set": doc})
-    else:
-        await db.models.insert_one(doc)
+def create_user(
+    session: Session,
+    *,
+    email: str,
+    password: str,
+    role: str,
+    hotel_name: str,
+    location: str,
+    photo_url: str,
+) -> User:
+    if len(password) < 8:
+        raise ValueError("Password must contain at least 8 characters")
+    normalized_role = role.lower() if role.lower() in {"owner", "admin"} else "owner"
+    user = User(
+        email=email.strip().lower(),
+        password_hash=hash_password(password),
+        role=normalized_role,
+        hotel=Hotel(
+            name=hotel_name.strip(),
+            location=location.strip(),
+            photo_url=photo_url.strip() or None,
+        ),
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
 
 
-async def load_model_cache():
-    doc = await db.models.find_one({"name": "model_xgb"})
-    if not doc:
-        raise RuntimeError("No model found in MongoDB models collection.")
-
-    payload = doc.get("payload")
-    if not payload:
-        raise RuntimeError("Model doc exists but payload is missing.")
-
-    model_obj, model_features = joblib.load(io.BytesIO(bytes(payload)))
-
-    MODEL_CACHE["model"] = model_obj
-    MODEL_CACHE["features"] = list(model_features)
-    MODEL_CACHE["model_id"] = str(doc["_id"])
-
-
-# ---------------------------
-# App
-# ---------------------------
-app = FastAPI()
-
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=SECRET_KEY,
-    same_site="lax",
-    https_only=False,  # True when deploying behind HTTPS
-)
-
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-
-
-@app.on_event("startup")
-async def startup():
-    global STATS
-    await db.users.create_index("email", unique=True)
-    await db.dataset.create_index("owner_user_id")
-    await db.predictions.create_index("owner_user_id")
-    await db.models.create_index("name", unique=True)
-
-    await ensure_model_in_mongo()
-    await load_model_cache()
-
-    STATS = compute_stats_from_csv()
+def record_prediction(
+    session: Session,
+    *,
+    hotel: Hotel,
+    features: BookingFeatures,
+    actual_outcome: int | None,
+) -> PredictionResponse:
+    if model_version_id is None:
+        raise RuntimeError("model registry is not initialized")
+    result = model_service.predict(features)
+    observation = Observation(
+        hotel_id=hotel.id,
+        features=features.as_model_row(),
+        actual_outcome=actual_outcome,
+    )
+    prediction = Prediction(
+        observation=observation,
+        model_version_id=model_version_id,
+        predicted_outcome=result.predicted_outcome,
+        cancellation_probability=result.cancellation_probability,
+        is_correct=(
+            result.predicted_outcome == actual_outcome if actual_outcome is not None else None
+        ),
+        latency_ms=result.latency_ms,
+    )
+    session.add(prediction)
+    session.commit()
+    session.refresh(prediction)
+    LOGGER.info(
+        "prediction_complete prediction_id=%s model=%s outcome=%s latency_ms=%s",
+        prediction.id,
+        model_service.version,
+        prediction.predicted_outcome,
+        prediction.latency_ms,
+    )
+    return PredictionResponse(
+        prediction_id=prediction.id,
+        predicted_outcome=prediction.predicted_outcome,
+        prediction_label="Cancelled" if prediction.predicted_outcome else "Not Cancelled",
+        cancellation_probability=prediction.cancellation_probability,
+        is_correct=prediction.is_correct,
+        model_version=model_service.version,
+        latency_ms=prediction.latency_ms,
+    )
 
 
 @app.get("/health")
-async def health():
-    cols = await db.list_collection_names()
-    return {"ok": True, "db": db.name, "collections": cols}
+def health(session: Session = Depends(get_session)):
+    session.execute(text("SELECT 1"))
+    return {
+        "status": "ok",
+        "database": "reachable",
+        "model_version": model_service.version,
+        "feature_count": len(model_service.feature_names),
+    }
 
 
-# ---------------------------
-# Auth
-# ---------------------------
 @app.get("/", response_class=HTMLResponse)
-async def login_page(request: Request):
-    if require_login(request):
-        return RedirectResponse("/predict", status_code=302)
-    return templates.TemplateResponse("login.html", ctx(request, title="Login", error=None))
+def login_page(request: Request):
+    if logged_in_user_id(request):
+        return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
+    return template(request, "login.html", title="Login", error=None)
 
 
 @app.post("/login")
-async def login(
+def login(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    session: Session = Depends(get_session),
 ):
-    user = await db.users.find_one({"email": email.strip().lower()})
-    if not user or not verify_password(password, user["password_hash"]):
-        return templates.TemplateResponse(
-            "login.html", ctx(request, title="Login", error="Invalid email or password")
-        )
-
-    request.session["user_id"] = str(user["_id"])
-    request.session["role"] = (user.get("role", "owner") or "owner").lower()
-    return RedirectResponse("/predict", status_code=302)
+    user = session.scalar(select(User).where(User.email == email.strip().lower()))
+    if user is None or not verify_password(password, user.password_hash):
+        return template(request, "login.html", title="Login", error="Invalid email or password")
+    request.session["user_id"] = user.id
+    request.session["role"] = user.role
+    return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/register", response_class=HTMLResponse)
-async def register_page(request: Request):
-    if require_login(request):
-        return RedirectResponse("/predict", status_code=302)
-    return templates.TemplateResponse("register.html", ctx(request, title="Register", error=None))
+def register_page(request: Request):
+    return template(request, "register.html", title="Register", error=None)
 
 
 @app.post("/register")
-async def register(
+def register(
     request: Request,
     hotel_name: str = Form(...),
     location: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
     photo_url: str = Form(""),
+    session: Session = Depends(get_session),
 ):
-    doc = {
-        "email": email.strip().lower(),
-        "password_hash": hash_password(password),
-        "role": "owner",
-        "hotel": {
-            "hotel_name": hotel_name.strip(),
-            "location": location.strip(),
-            "photo_url": photo_url.strip(),
-        },
-        "created_at": datetime.utcnow(),
-    }
-
     try:
-        res = await db.users.insert_one(doc)
-    except Exception:
-        return templates.TemplateResponse(
-            "register.html", ctx(request, title="Register", error="Email already exists")
+        user = create_user(
+            session,
+            email=email,
+            password=password,
+            role="owner",
+            hotel_name=hotel_name,
+            location=location,
+            photo_url=photo_url,
         )
-
-    # Auto-login after register
-    request.session["user_id"] = str(res.inserted_id)
-    request.session["role"] = "owner"
-    return RedirectResponse("/predict", status_code=302)
+    except (IntegrityError, ValueError) as exc:
+        session.rollback()
+        message = "Email already exists" if isinstance(exc, IntegrityError) else str(exc)
+        return template(request, "register.html", title="Register", error=message)
+    request.session["user_id"] = user.id
+    request.session["role"] = user.role
+    return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/logout")
-async def logout(request: Request):
+def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/", status_code=302)
+    return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
 
 
-# ---------------------------
-# Admin dashboard (admin-only)
-# ---------------------------
 @app.get("/dashboard", response_class=HTMLResponse)
-async def admin_dashboard(request: Request):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-    if not require_admin(request):
-        return RedirectResponse("/predict", status_code=302)
-
-    total_users = await db.users.count_documents({})
-
-    # count submissions per user (dataset)
-    pipeline = [{"$group": {"_id": "$owner_user_id", "submissions": {"$sum": 1}}}]
-    counts = {}
-    async for d in db.dataset.aggregate(pipeline):
-        counts[str(d["_id"])] = int(d["submissions"])
-
-    users = []
-    async for u in db.users.find({}, {"password_hash": 0}):
-        uid_str = str(u["_id"])
-        hotel_name = (u.get("hotel") or {}).get("hotel_name") or u.get("email")
-        users.append({
-            "id": uid_str,
-            "name": hotel_name,
-            "email": u.get("email"),
-            "role": (u.get("role") or "owner").lower(),
-            "submissions": counts.get(uid_str, 0),
-        })
-
-    f = pop_flash(request)
-
-    return templates.TemplateResponse(
+def admin_dashboard(request: Request, session: Session = Depends(get_session)):
+    if not logged_in_user_id(request):
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+    if not is_admin(request):
+        return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
+    rows = session.execute(
+        select(User, Hotel, func.count(Observation.id))
+        .outerjoin(Hotel, Hotel.owner_id == User.id)
+        .outerjoin(Observation, Observation.hotel_id == Hotel.id)
+        .group_by(User.id, Hotel.id)
+        .order_by(User.created_at)
+    ).all()
+    users = [
+        {
+            "id": user.id,
+            "name": hotel.name if hotel else user.email,
+            "email": user.email,
+            "role": user.role,
+            "submissions": count,
+        }
+        for user, hotel, count in rows
+    ]
+    return template(
+        request,
         "admin_dashboard.html",
-        ctx(
-            request,
-            title="Admin Dashboard",
-            total_users=total_users,
-            users=users,
-            flash=f,
-            add_error=None,
-        ),
+        title="Admin Dashboard",
+        total_users=len(users),
+        users=users,
+        flash=pop_flash(request),
+        add_error=None,
     )
 
 
 @app.post("/dashboard/add-user")
-async def admin_add_user(
+def admin_add_user(
     request: Request,
     hotel_name: str = Form(...),
     location: str = Form(...),
@@ -329,152 +357,130 @@ async def admin_add_user(
     password: str = Form(...),
     role: str = Form("owner"),
     photo_url: str = Form(""),
+    session: Session = Depends(get_session),
 ):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-    if not require_admin(request):
-        return RedirectResponse("/predict", status_code=302)
-
-    role = (role or "owner").lower()
-    if role not in ("owner", "admin"):
-        role = "owner"
-
-    doc = {
-        "email": email.strip().lower(),
-        "password_hash": hash_password(password),
-        "role": role,
-        "hotel": {
-            "hotel_name": hotel_name.strip(),
-            "location": location.strip(),
-            "photo_url": photo_url.strip(),
-        },
-        "created_at": datetime.utcnow(),
-    }
-
+    if not logged_in_user_id(request) or not is_admin(request):
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     try:
-        await db.users.insert_one(doc)
-        flash(request, "User created successfully", "ok")
-    except Exception:
-        flash(request, "Email already exists (user not created)", "bad")
-
-    return RedirectResponse("/dashboard", status_code=302)
+        create_user(
+            session,
+            email=email,
+            password=password,
+            role=role,
+            hotel_name=hotel_name,
+            location=location,
+            photo_url=photo_url,
+        )
+        flash(request, "User created successfully")
+    except (IntegrityError, ValueError) as exc:
+        session.rollback()
+        flash(
+            request, "Email already exists" if isinstance(exc, IntegrityError) else str(exc), "bad"
+        )
+    return RedirectResponse("/dashboard", status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/dashboard/users/{user_id}", response_class=HTMLResponse)
-async def admin_user_page(request: Request, user_id: str):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-    if not require_admin(request):
-        return RedirectResponse("/predict", status_code=302)
-
-    oid = oid_or_none(user_id)
-    if not oid:
-        return RedirectResponse("/dashboard", status_code=302)
-
-    u = await db.users.find_one({"_id": oid}, {"password_hash": 0})
-    if not u:
-        return RedirectResponse("/dashboard", status_code=302)
-
-    submissions = await db.dataset.count_documents({"owner_user_id": oid})
-
-    view = {
-        "id": str(u["_id"]),
-        "email": u.get("email"),
-        "role": (u.get("role") or "owner").lower(),
-        "name": (u.get("hotel") or {}).get("hotel_name") or u.get("email"),
-        "location": (u.get("hotel") or {}).get("location", ""),
-        "submissions": submissions,
-    }
-
-    f = pop_flash(request)
-    msg = f["text"] if f and f.get("kind") == "ok" else None
-    err = f["text"] if f and f.get("kind") == "bad" else None
-
-    return templates.TemplateResponse(
+def admin_user_page(request: Request, user_id: int, session: Session = Depends(get_session)):
+    if not logged_in_user_id(request) or not is_admin(request):
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+    user = session.get(User, user_id)
+    if user is None:
+        return RedirectResponse("/dashboard", status_code=status.HTTP_302_FOUND)
+    count = session.scalar(
+        select(func.count(Observation.id)).where(Observation.hotel_id == user.hotel.id)
+    )
+    message = pop_flash(request)
+    return template(
+        request,
         "admin_user.html",
-        ctx(request, title="Configure user", u=view, msg=msg, error=err),
+        title="Configure user",
+        u={
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "name": user.hotel.name,
+            "location": user.hotel.location,
+            "submissions": count,
+        },
+        msg=message["text"] if message and message["kind"] == "ok" else None,
+        error=message["text"] if message and message["kind"] == "bad" else None,
     )
 
 
 @app.post("/dashboard/users/{user_id}/role")
-async def admin_set_role(request: Request, user_id: str, role: str = Form(...)):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-    if not require_admin(request):
-        return RedirectResponse("/predict", status_code=302)
-
-    oid = oid_or_none(user_id)
-    if not oid:
-        return RedirectResponse("/dashboard", status_code=302)
-
-    role = (role or "owner").lower()
-    if role not in ("owner", "admin"):
-        role = "owner"
-
-    # prevent demoting yourself (keeps you from losing dashboard)
-    if str(oid) == uid and role != "admin":
-        flash(request, "You cannot remove admin role from your own account.", "bad")
-        return RedirectResponse(f"/dashboard/users/{user_id}", status_code=302)
-
-    await db.users.update_one({"_id": oid}, {"$set": {"role": role}})
-    flash(request, "Role updated.", "ok")
-    return RedirectResponse(f"/dashboard/users/{user_id}", status_code=302)
+def admin_set_role(
+    request: Request, user_id: int, role: str = Form(...), session: Session = Depends(get_session)
+):
+    current_id = logged_in_user_id(request)
+    if current_id is None or not is_admin(request):
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+    user = session.get(User, user_id)
+    if user is None:
+        return RedirectResponse("/dashboard", status_code=status.HTTP_302_FOUND)
+    if user_id == current_id and role != "admin":
+        flash(request, "You cannot remove your own admin role.", "bad")
+    else:
+        user.role = role if role in {"owner", "admin"} else "owner"
+        session.commit()
+        flash(request, "Role updated.")
+    return RedirectResponse(f"/dashboard/users/{user_id}", status_code=status.HTTP_302_FOUND)
 
 
 @app.post("/dashboard/users/{user_id}/delete")
-async def admin_delete_user(request: Request, user_id: str):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-    if not require_admin(request):
-        return RedirectResponse("/predict", status_code=302)
-
-    oid = oid_or_none(user_id)
-    if not oid:
-        return RedirectResponse("/dashboard", status_code=302)
-
-    # prevent deleting yourself
-    if str(oid) == uid:
+def admin_delete_user(request: Request, user_id: int, session: Session = Depends(get_session)):
+    current_id = logged_in_user_id(request)
+    if current_id is None or not is_admin(request):
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+    if user_id == current_id:
         flash(request, "You cannot delete your own admin account.", "bad")
-        return RedirectResponse("/dashboard", status_code=302)
-
-    # cascade delete user data
-    await db.dataset.delete_many({"owner_user_id": oid})
-    await db.predictions.delete_many({"owner_user_id": oid})
-    await db.users.delete_one({"_id": oid})
-
-    flash(request, "User deleted (and their data removed).", "ok")
-    return RedirectResponse("/dashboard", status_code=302)
+        return RedirectResponse("/dashboard", status_code=status.HTTP_302_FOUND)
+    user = session.get(User, user_id)
+    if user is not None:
+        session.delete(user)
+        session.commit()
+        flash(request, "User and related records deleted.")
+    return RedirectResponse("/dashboard", status_code=status.HTTP_302_FOUND)
 
 
-# ---------------------------
-# Prediction (main page)
-# ---------------------------
 @app.get("/predict", response_class=HTMLResponse)
-async def predict_page(request: Request):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-
-    return templates.TemplateResponse(
+def predict_page(request: Request):
+    if logged_in_user_id(request) is None:
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+    return template(
+        request,
         "predict.html",
-        ctx(
-            request,
-            title="Prediction",
-            stats=STATS,
-            prediction_text=None,
-            is_correct=None,
-        ),
+        title="Prediction",
+        stats=STATS,
+        prediction_text=None,
+        is_correct=None,
+        prediction_probability=None,
+        input_error=None,
+    )
+
+
+def booking_from_form(**values) -> BookingFeatures:
+    return BookingFeatures(
+        number_of_adults=values["number_of_adults"],
+        number_of_children=values["number_of_children"],
+        number_of_weekend_nights=values["number_of_weekend_nights"],
+        number_of_week_nights=values["number_of_week_nights"],
+        type_of_meal=values["type_of_meal"],
+        car_parking_space=values["car_parking_space"],
+        room_type=values["room_type"],
+        lead_time=values["lead_time"],
+        market_segment_type=values["market_segment_type"],
+        repeated=values["repeated"],
+        previous_cancellations=values["p_c"],
+        previous_not_cancelled=values["p_not_c"],
+        average_price=values["average_price"],
+        special_requests=values["special_requests"],
     )
 
 
 @app.post("/predict", response_class=HTMLResponse)
-async def predict_submit(
+def predict_submit(
     request: Request,
-
     number_of_adults: int = Form(...),
     number_of_children: int = Form(...),
     number_of_weekend_nights: int = Form(...),
@@ -489,84 +495,65 @@ async def predict_submit(
     p_not_c: int = Form(...),
     average_price: float = Form(...),
     special_requests: int = Form(...),
-
-    actual_outcome: str = Form(""),  # "", "0", "1"
+    actual_outcome: str = Form(""),
+    session: Session = Depends(get_session),
 ):
-    uid = require_login(request)
-    if not uid:
-        return RedirectResponse("/", status_code=302)
-
-    user = await db.users.find_one({"_id": ObjectId(uid)}, {"password_hash": 0})
-
-    features = {
-        "number of adults": number_of_adults,
-        "number of children": number_of_children,
-        "number of weekend nights": number_of_weekend_nights,
-        "number of week nights": number_of_week_nights,
-        "type of meal": type_of_meal,
-        "car parking space": car_parking_space,
-        "room type": room_type,
-        "lead time": lead_time,
-        "market segment type": market_segment_type,
-        "repeated": repeated,
-        "P-C": p_c,
-        "P-not-C": p_not_c,
-        "average price": average_price,
-        "special requests": special_requests,
-    }
-
-    model = MODEL_CACHE["model"]
-    model_features = MODEL_CACHE["features"]
-    model_id = MODEL_CACHE["model_id"]
-
-    if model is None or model_features is None or model_id is None:
-        await load_model_cache()
-        model = MODEL_CACHE["model"]
-        model_features = MODEL_CACHE["features"]
-        model_id = MODEL_CACHE["model_id"]
-
-    df = pd.DataFrame([features], columns=model_features)
-    y = int(model.predict(df)[0])  # 0/1
-
-    prediction_text = "Cancelled" if y == 1 else "Not Cancelled"
-
-    actual = None
-    is_correct = None
-    if actual_outcome in ("0", "1"):
-        actual = int(actual_outcome)
-        is_correct = (actual == y)
-
-    now = datetime.utcnow()
-
-    # dataset: for data collection
-    await db.dataset.insert_one({
-        "owner_user_id": ObjectId(uid),
-        "hotel_name": (user.get("hotel") or {}).get("hotel_name"),
-        "location": (user.get("hotel") or {}).get("location"),
-        "features": features,
-        "actual": actual,
-        "created_at": now,
-    })
-
-    # predictions: store prediction + correctness (if actual provided)
-    await db.predictions.insert_one({
-        "owner_user_id": ObjectId(uid),
-        "model_id": ObjectId(model_id),
-        "features": features,
-        "prediction": y,
-        "prediction_text": prediction_text,
-        "actual": actual,
-        "is_correct": is_correct,
-        "created_at": now,
-    })
-
-    return templates.TemplateResponse(
-        "predict.html",
-        ctx(
+    user_id = logged_in_user_id(request)
+    if user_id is None:
+        return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+    try:
+        features = booking_from_form(**locals())
+    except ValidationError as exc:
+        return template(
             request,
+            "predict.html",
             title="Prediction",
             stats=STATS,
-            prediction_text=prediction_text,
-            is_correct=is_correct,
+            prediction_text=None,
+            is_correct=None,
+            prediction_probability=None,
+            input_error=json.dumps(exc.errors(include_url=False)),
+        )
+    user = session.get(User, user_id)
+    if user is None or user.hotel is None:
+        raise HTTPException(status_code=401, detail="login required")
+    response = record_prediction(
+        session,
+        hotel=user.hotel,
+        features=features,
+        actual_outcome=int(actual_outcome) if actual_outcome in {"0", "1"} else None,
+    )
+    return template(
+        request,
+        "predict.html",
+        title="Prediction",
+        stats=STATS,
+        prediction_text=response.prediction_label,
+        is_correct=response.is_correct,
+        prediction_probability=(
+            round(response.cancellation_probability * 100, 1)
+            if response.cancellation_probability is not None
+            else None
         ),
+        input_error=None,
+    )
+
+
+@app.post("/api/v1/predictions", response_model=PredictionResponse)
+def predict_api(
+    payload: PredictionRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user_id = logged_in_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="login required")
+    user = session.get(User, user_id)
+    if user is None or user.hotel is None:
+        raise HTTPException(status_code=401, detail="login required")
+    return record_prediction(
+        session,
+        hotel=user.hotel,
+        features=payload.features,
+        actual_outcome=payload.actual_outcome,
     )

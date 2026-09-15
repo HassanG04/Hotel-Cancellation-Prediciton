@@ -1,42 +1,39 @@
-import os
-import sys
-from datetime import datetime
+from __future__ import annotations
 
-from dotenv import load_dotenv
-from pymongo import MongoClient
-from passlib.context import CryptContext
-from backend.security import hash_password
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+import argparse
+import getpass
 
-def main():
-    if len(sys.argv) != 3:
-        print("Usage: python backend/create_admin.py <email> <password>")
-        sys.exit(1)
+from sqlalchemy import select
 
-    email = sys.argv[1].strip().lower()
-    password = sys.argv[2]
+from backend.db import SessionLocal
+from backend.main import create_user
+from backend.models import User
 
-    load_dotenv()  # loads advancedb_project/.env when you run from project root
-    uri = os.environ["MONGO_URI"]
-    db_name = os.environ["MONGO_DB"]
 
-    client = MongoClient(uri)
-    db = client[db_name]
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Create the first hotel application administrator."
+    )
+    parser.add_argument("--email", required=True)
+    parser.add_argument("--hotel-name", default="Administration")
+    parser.add_argument("--location", default="N/A")
+    args = parser.parse_args()
+    password = getpass.getpass("Admin password (minimum 8 characters): ")
 
-    doc = {
-        "email": email,
-        "password_hash": hash_password(password),
-        "role": "admin",
-        "created_at": datetime.utcnow(),
-        "hotel": None,
-    }
+    with SessionLocal() as session:
+        if session.scalar(select(User).where(User.email == args.email.strip().lower())):
+            raise SystemExit("A user with that email already exists")
+        create_user(
+            session,
+            email=args.email,
+            password=password,
+            role="admin",
+            hotel_name=args.hotel_name,
+            location=args.location,
+            photo_url="",
+        )
+    print(f"Admin created: {args.email.strip().lower()}")
 
-    try:
-        db.users.insert_one(doc)
-        print(f"Admin created: {email}")
-    except Exception as e:
-        print("Failed:", e)
-        sys.exit(2)
 
 if __name__ == "__main__":
     main()

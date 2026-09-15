@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+work.ipynb
+cellula_hotel/
+predictor/
+manage.py
+db.sqlite3
