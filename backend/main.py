@@ -154,8 +154,22 @@ def logged_in_user_id(request: Request) -> int | None:
         return None
 
 
-def is_admin(request: Request) -> bool:
-    return (request.session.get("role") or "").lower() == "admin"
+def session_user(request: Request, session: Session) -> User | None:
+    """Resolve current account state; signed cookie roles are not authorization evidence."""
+    user_id = logged_in_user_id(request)
+    if user_id is None:
+        return None
+    user = session.get(User, user_id)
+    if user is None:
+        request.session.clear()
+        return None
+    request.session["role"] = user.role
+    return user
+
+
+def is_admin(request: Request, session: Session) -> bool:
+    user = session_user(request, session)
+    return user is not None and user.role == "admin"
 
 
 def flash(request: Request, message: str, kind: str = "ok") -> None:
@@ -253,8 +267,8 @@ def health(session: Session = Depends(get_session)):
 
 
 @app.get("/", response_class=HTMLResponse)
-def login_page(request: Request):
-    if logged_in_user_id(request):
+def login_page(request: Request, session: Session = Depends(get_session)):
+    if session_user(request, session) is not None:
         return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
     return template(request, "login.html", title="Login", error=None)
 
@@ -269,6 +283,7 @@ def login(
     user = session.scalar(select(User).where(User.email == email.strip().lower()))
     if user is None or not verify_password(password, user.password_hash):
         return template(request, "login.html", title="Login", error="Invalid email or password")
+    request.session.clear()
     request.session["user_id"] = user.id
     request.session["role"] = user.role
     return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
@@ -303,6 +318,7 @@ def register(
         session.rollback()
         message = "Email already exists" if isinstance(exc, IntegrityError) else str(exc)
         return template(request, "register.html", title="Register", error=message)
+    request.session.clear()
     request.session["user_id"] = user.id
     request.session["role"] = user.role
     return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
@@ -316,9 +332,10 @@ def logout(request: Request):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def admin_dashboard(request: Request, session: Session = Depends(get_session)):
-    if not logged_in_user_id(request):
+    user = session_user(request, session)
+    if user is None:
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
-    if not is_admin(request):
+    if user.role != "admin":
         return RedirectResponse("/predict", status_code=status.HTTP_302_FOUND)
     rows = session.execute(
         select(User, Hotel, func.count(Observation.id))
@@ -359,7 +376,7 @@ def admin_add_user(
     photo_url: str = Form(""),
     session: Session = Depends(get_session),
 ):
-    if not logged_in_user_id(request) or not is_admin(request):
+    if not logged_in_user_id(request) or not is_admin(request, session):
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     try:
         create_user(
@@ -382,7 +399,7 @@ def admin_add_user(
 
 @app.get("/dashboard/users/{user_id}", response_class=HTMLResponse)
 def admin_user_page(request: Request, user_id: int, session: Session = Depends(get_session)):
-    if not logged_in_user_id(request) or not is_admin(request):
+    if not logged_in_user_id(request) or not is_admin(request, session):
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     user = session.get(User, user_id)
     if user is None:
@@ -413,7 +430,7 @@ def admin_set_role(
     request: Request, user_id: int, role: str = Form(...), session: Session = Depends(get_session)
 ):
     current_id = logged_in_user_id(request)
-    if current_id is None or not is_admin(request):
+    if current_id is None or not is_admin(request, session):
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     user = session.get(User, user_id)
     if user is None:
@@ -430,7 +447,7 @@ def admin_set_role(
 @app.post("/dashboard/users/{user_id}/delete")
 def admin_delete_user(request: Request, user_id: int, session: Session = Depends(get_session)):
     current_id = logged_in_user_id(request)
-    if current_id is None or not is_admin(request):
+    if current_id is None or not is_admin(request, session):
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     if user_id == current_id:
         flash(request, "You cannot delete your own admin account.", "bad")
@@ -444,8 +461,8 @@ def admin_delete_user(request: Request, user_id: int, session: Session = Depends
 
 
 @app.get("/predict", response_class=HTMLResponse)
-def predict_page(request: Request):
-    if logged_in_user_id(request) is None:
+def predict_page(request: Request, session: Session = Depends(get_session)):
+    if session_user(request, session) is None:
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     return template(
         request,
@@ -498,8 +515,8 @@ def predict_submit(
     actual_outcome: str = Form(""),
     session: Session = Depends(get_session),
 ):
-    user_id = logged_in_user_id(request)
-    if user_id is None:
+    user = session_user(request, session)
+    if user is None:
         return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
     try:
         features = booking_from_form(**locals())
@@ -514,8 +531,7 @@ def predict_submit(
             prediction_probability=None,
             input_error=json.dumps(exc.errors(include_url=False)),
         )
-    user = session.get(User, user_id)
-    if user is None or user.hotel is None:
+    if user.hotel is None:
         raise HTTPException(status_code=401, detail="login required")
     response = record_prediction(
         session,
@@ -545,10 +561,7 @@ def predict_api(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    user_id = logged_in_user_id(request)
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="login required")
-    user = session.get(User, user_id)
+    user = session_user(request, session)
     if user is None or user.hotel is None:
         raise HTTPException(status_code=401, detail="login required")
     return record_prediction(

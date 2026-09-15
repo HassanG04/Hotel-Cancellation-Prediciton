@@ -178,9 +178,11 @@ pytest -q
 alembic upgrade head
 ```
 
-Ten tests cover real artifact loading and inference, input bounds, unknown fields,
+Twelve tests cover real artifact loading and inference, input bounds, unknown fields,
 database cascade integrity, authenticated API prediction, health, data contracts, and
-retraining/export/loading. The migration was locally verified through upgrade → downgrade
+retraining/export/loading. Replayed signed cookies are tested across every admin read/write
+route after account demotion and deletion; demoted owners can still make predictions.
+The migration was locally verified through upgrade → downgrade
 → upgrade on SQLite. GitHub Actions configures PostgreSQL 16 and runs the migration;
 a real local PostgreSQL server was unavailable, but the remote PostgreSQL job and container
 smoke test both passed. This is verified CI infrastructure, not a public deployment.
@@ -194,6 +196,8 @@ smoke test both passed. This is verified CI infrastructure, not a public deploym
 - Database connectivity is exposed by `/health`.
 - Passwords use PBKDF2-SHA256 hashes; secrets come from environment variables.
 - Session cookies can be marked secure with `COOKIE_SECURE=true` behind HTTPS.
+- Protected requests resolve the current account and role from the database. Cookie roles
+  are display state, not authorization evidence; deleted accounts are treated as anonymous.
 
 ## Repository map
 
